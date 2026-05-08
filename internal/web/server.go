@@ -411,6 +411,7 @@ func Start(port string, shouldOpenBrowser bool) {
 	RegisterCollectionRoutes(api)
 	RegisterLocalMusicRoutes(api)
 	RegisterVideogenRoutes(api, videoDir)
+	RegisterAPIRoutes(api)
 
 	listenAddr := ":" + port
 	listener, err := net.Listen("tcp", listenAddr)
