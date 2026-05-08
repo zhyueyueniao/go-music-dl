@@ -777,7 +777,7 @@ func RegisterMusicRoutes(api *gin.RouterGroup) {
 		coverURL := strings.TrimSpace(c.Query("cover"))
 		streamPlayback := c.Query("stream") == "1"
 		noRangeRequest := strings.TrimSpace(c.GetHeader("Range")) == ""
-		embedMeta := !streamPlayback && c.Query("embed") == "1" && noRangeRequest
+		embedMeta := !streamPlayback && (c.Query("embed") == "1" || c.Query("embed") == "") && noRangeRequest
 		saveLocal := !streamPlayback && c.Query("save_local") == "1" && noRangeRequest
 		extra := parseSongExtraQuery(c.Query("extra"))
 		if album == "" && extra != nil {
