@@ -848,7 +848,14 @@ func streamSodaDownload(song *model.Song, filename string, c *gin.Context, taskK
 	c.Writer.Write(decryptedData)
 
 	// 后台保存（不需要解密，因为已解密）
-	go saveDownloadDataToLocal(decryptedData, ext, song, filename, true)
+	go func() {
+		savedPath, err := saveDownloadDataToLocal(decryptedData, ext, song, filename, true)
+		if err != nil {
+			fmt.Printf("[后台保存-汽水音乐] 保存失败: %v\n", err)
+		} else {
+			fmt.Printf("[后台保存-汽水音乐] 保存成功: %s\n", savedPath)
+		}
+	}()
 }
 
 // saveDownloadToLocalBackground 后台保存下载数据到本地并嵌入元数据
@@ -858,8 +865,11 @@ func saveDownloadToLocalBackground(song *model.Song, ext string, reader *io.Pipe
 	// 读取所有数据
 	audioData, err := io.ReadAll(reader)
 	if err != nil {
+		fmt.Printf("[后台保存] 读取数据失败: %v\n", err)
 		return
 	}
+
+	fmt.Printf("[后台保存] 读取数据成功，大小: %d bytes, 歌曲: %s - %s\n", len(audioData), song.Artist, song.Name)
 
 	// 对于汽水音乐，需要解密
 	if song.Source == "soda" {
@@ -872,7 +882,12 @@ func saveDownloadToLocalBackground(song *model.Song, ext string, reader *io.Pipe
 	}
 
 	// 保存到本地并嵌入元数据
-	saveDownloadDataToLocal(audioData, ext, song, "", false)
+	savedPath, err := saveDownloadDataToLocal(audioData, ext, song, "", false)
+	if err != nil {
+		fmt.Printf("[后台保存] 保存失败: %v\n", err)
+	} else {
+		fmt.Printf("[后台保存] 保存成功: %s\n", savedPath)
+	}
 }
 
 // saveDownloadDataToLocal 保存音频数据到本地并嵌入元数据
@@ -881,10 +896,11 @@ func saveDownloadToLocalBackground(song *model.Song, ext string, reader *io.Pipe
 // song: 歌曲信息
 // filenameHint: 文件名提示（可选）
 // alreadyDecrypted: 数据是否已经解密（汽水音乐为 true）
-func saveDownloadDataToLocal(audioData []byte, ext string, song *model.Song, filenameHint string, alreadyDecrypted bool) {
+// 返回保存的文件路径和错误信息
+func saveDownloadDataToLocal(audioData []byte, ext string, song *model.Song, filenameHint string, alreadyDecrypted bool) (string, error) {
 	// 如果数据为空，直接返回
 	if len(audioData) == 0 {
-		return
+		return "", fmt.Errorf("音频数据为空")
 	}
 
 	// 构建文件名
@@ -895,7 +911,11 @@ func saveDownloadDataToLocal(audioData []byte, ext string, song *model.Song, fil
 	}
 
 	// 保存到本地并嵌入元数据
-	_, _ = saveToLocalMusicDir(audioData, ext, song, filename)
+	savedPath, err := saveToLocalMusicDir(audioData, ext, song, filename)
+	if err != nil {
+		return "", fmt.Errorf("保存到本地失败: %w", err)
+	}
+	return savedPath, nil
 }
 
 // streamDownloadAndSaveBackground 流式下载本地歌曲缺失的元数据版本
