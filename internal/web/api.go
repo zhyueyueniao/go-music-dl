@@ -1183,7 +1183,7 @@ func saveToLocalMusicDir(audioData []byte, ext string, song *model.Song, filenam
 	// 确保文件名合法
 	safeFilename := strings.TrimSpace(filenameHint)
 	if safeFilename == "" {
-		safeFilename = fmt.Sprintf("%s - %s.%s", song.Name, song.Artist, ext)
+		safeFilename = fmt.Sprintf("%s - %s.%s", song.Artist, song.Name, ext)
 	}
 	// 清理文件名中的非法字符
 	safeFilename = sanitizeFilenameForSave(safeFilename)
