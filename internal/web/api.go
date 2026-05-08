@@ -123,6 +123,8 @@ type SongDetail struct {
 	Genre string `json:"genre"`
 	// Extra 额外的元数据信息，以键值对形式存储
 	Extra map[string]string `json:"extra"`
+	// HasMetadata 歌曲是否有完整的内置元数据（仅本地歌曲）
+	HasMetadata bool `json:"has_metadata,omitempty"`
 }
 
 // PlaylistDetail 歌单/专辑详细信息结构体
@@ -330,16 +332,7 @@ func handleAPISearch(c *gin.Context) {
 				for _, track := range localTracks {
 					// 通过歌曲名称匹配
 					if strings.Contains(strings.ToLower(track.Name), keywordLower) {
-						localSong := model.Song{
-							ID:       track.ID,
-							Source:   localMusicSource,
-							Name:     track.Name,
-							Artist:   track.Artist,
-							Album:    track.Album,
-							Cover:    track.Cover,
-							Duration: track.Duration,
-							Extra:    track.Extra,
-						}
+						localSong := modelToLocalSongWithMetadata(track)
 						// 歌手匹配过滤
 						if req.ExactArtist == "" || strings.ToLower(track.Artist) == strings.ToLower(req.ExactArtist) {
 							mu.Lock()
@@ -349,16 +342,7 @@ func handleAPISearch(c *gin.Context) {
 					}
 					// 通过歌手名称匹配
 					if req.ExactArtist == "" && strings.Contains(strings.ToLower(track.Artist), keywordLower) {
-						localSong := model.Song{
-							ID:       track.ID,
-							Source:   localMusicSource,
-							Name:     track.Name,
-							Artist:   track.Artist,
-							Album:    track.Album,
-							Cover:    track.Cover,
-							Duration: track.Duration,
-							Extra:    track.Extra,
-						}
+						localSong := modelToLocalSongWithMetadata(track)
 						// 检查是否已经添加过（避免重复）
 						alreadyExists := false
 						for _, existing := range allSongs {
@@ -412,7 +396,7 @@ func handleAPISearch(c *gin.Context) {
 // song: 原始歌曲模型对象
 // 返回: 包含详细信息的 SongDetail 结构体
 func songToDetail(song model.Song) SongDetail {
-	return SongDetail{
+	detail := SongDetail{
 		ID:         song.ID,
 		Source:     song.Source,
 		SourceName: core.GetSourceDescription(song.Source),
@@ -430,6 +414,46 @@ func songToDetail(song model.Song) SongDetail {
 		Genre:      getGenreFromExtra(song.Extra),
 		Extra:      song.Extra,
 	}
+
+	// 检查是否有完整元数据标记
+	if song.Extra != nil {
+		if hasMeta, ok := song.Extra["has_metadata"]; ok && hasMeta == "true" {
+			detail.HasMetadata = true
+		}
+	}
+
+	return detail
+}
+
+// checkLocalTrackHasMetadata 检查本地歌曲是否有完整的内置元数据
+// 通过检查 track.Missing 是否为空来判断
+func checkLocalTrackHasMetadata(track *localMusicTrack) bool {
+	return track != nil && (len(track.Missing) == 0 || (len(track.Missing) == 1 && track.Missing[0] == ""))
+}
+
+// modelToLocalSongWithMetadata 将本地歌曲 track 转换为 model.Song
+// 自动检测并标记是否有完整的内置元数据
+func modelToLocalSongWithMetadata(track *localMusicTrack) model.Song {
+	song := model.Song{
+		ID:       track.ID,
+		Source:   localMusicSource,
+		Name:     track.Name,
+		Artist:   track.Artist,
+		Album:    track.Album,
+		Cover:    track.Cover,
+		Duration: track.Duration,
+		Extra:    track.Extra,
+	}
+
+	// 检查并标记是否有完整元数据
+	if checkLocalTrackHasMetadata(track) {
+		if song.Extra == nil {
+			song.Extra = make(map[string]string)
+		}
+		song.Extra["has_metadata"] = "true"
+	}
+
+	return song
 }
 
 // playlistToDetail 将歌单/专辑模型转换为详细信息结构体
@@ -485,7 +509,9 @@ func getGenreFromExtra(extra map[string]string) string {
 }
 
 // handleAPIDownload 处理 JSON API 下载请求
-// 从各音乐平台下载歌曲，自动嵌入完整元数据后保存到本地音乐目录，最后读取本地文件返回
+// 支持两种模式：
+// 1. 在线下载：从各音乐平台下载歌曲，自动嵌入完整元数据后保存到本地，最后读取本地文件返回
+// 2. 本地读取：检查本地歌曲是否有完整元数据，有则直接返回，无则尝试获取元数据并写入后再返回
 // 自动嵌入歌曲完整元数据（标题、艺术家、专辑、封面、歌词）到音频文件
 // c: Gin 上下文对象，包含请求和响应信息
 func handleAPIDownload(c *gin.Context) {
@@ -506,12 +532,38 @@ func handleAPIDownload(c *gin.Context) {
 		return
 	}
 
-	// 处理本地音乐源，直接读取并返回
+	// 处理本地音乐源
 	if isLocalMusicSource(source) {
-		serveLocalMusicDownload(c, id, false)
+		// 检查本地歌曲是否有完整元数据
+		track, err := localMusicTrackByID(id)
+		if err != nil {
+			c.JSON(404, gin.H{"success": false, "error": "Local music not found"})
+			return
+		}
+
+		// 检查是否有完整元数据
+		if checkLocalTrackHasMetadata(track) {
+			// 有完整元数据，直接返回
+			serveLocalMusicDownload(c, id, false)
+			return
+		}
+
+		// 元数据不完整，尝试从在线获取并写入
+		// 通过原始文件 ID 获取在线信息
+		onlineSong, err := getOnlineSongByLocalTrack(track)
+		if err != nil {
+			// 无法获取在线信息，直接返回本地文件
+			serveLocalMusicDownload(c, id, false)
+			return
+		}
+
+		// 下载在线版本并嵌入元数据
+		onlineSong.Source = source
+		downloadAndSaveWithMetadata(onlineSong, c)
 		return
 	}
 
+	// 在线下载模式
 	// 构建歌曲对象
 	tempSong := &model.Song{
 		ID:     id,
@@ -623,26 +675,174 @@ func handleAPIDownload(c *gin.Context) {
 	}
 
 	// 读取本地文件并返回
-	file, err := os.Open(savedPath)
+	serveSavedFile(c, savedPath, filename, ext)
+}
+
+// getOnlineSongByLocalTrack 根据本地歌曲信息尝试获取在线歌曲信息
+// 通过文件名中的歌名和歌手尝试搜索
+func getOnlineSongByLocalTrack(track *localMusicTrack) (*model.Song, error) {
+	if track == nil {
+		return nil, fmt.Errorf("track is nil")
+	}
+
+	songName := strings.TrimSpace(track.Name)
+	if songName == "" || songName == "Unknown" {
+		return nil, fmt.Errorf("no song name available")
+	}
+
+	// 尝试搜索歌曲
+	var songs []model.Song
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var searchErr error
+
+	// 使用默认搜索源
+	sources := core.GetDefaultSourceNames()
+	for _, src := range sources {
+		wg.Add(1)
+		go func(s string) {
+			defer wg.Done()
+			fn := core.GetSearchFunc(s)
+			if fn == nil {
+				return
+			}
+			res, err := fn(songName)
+			if err != nil {
+				mu.Lock()
+				if searchErr == nil {
+					searchErr = err
+				}
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			for i := range res {
+				res[i].Source = s
+			}
+			songs = append(songs, res...)
+			mu.Unlock()
+		}(src)
+	}
+	wg.Wait()
+
+	if len(songs) == 0 {
+		if searchErr != nil {
+			return nil, searchErr
+		}
+		return nil, fmt.Errorf("no search results")
+	}
+
+	// 尝试匹配歌手
+	artistName := strings.TrimSpace(track.Artist)
+	if artistName != "" && artistName != "未知歌手" {
+		artistLower := strings.ToLower(artistName)
+		for _, song := range songs {
+			if strings.Contains(strings.ToLower(song.Artist), artistLower) {
+				return &song, nil
+			}
+		}
+	}
+
+	// 返回第一个结果
+	return &songs[0], nil
+}
+
+// downloadAndSaveWithMetadata 下载歌曲、嵌入元数据并返回
+func downloadAndSaveWithMetadata(song *model.Song, c *gin.Context) {
+	if song == nil || song.ID == "" || song.Source == "" {
+		c.JSON(400, gin.H{"success": false, "error": "invalid song info"})
+		return
+	}
+
+	// 获取 Web 设置
+	settings := core.GetWebSettings()
+
+	var audioData []byte
+	var ext string
+
+	// 获取音频数据
+	dlFunc := core.GetDownloadFunc(song.Source)
+	if dlFunc == nil {
+		c.JSON(400, gin.H{"success": false, "error": "Unknown source"})
+		return
+	}
+
+	downloadUrl, err := dlFunc(song)
+	if err != nil {
+		c.JSON(404, gin.H{"success": false, "error": "Failed to get URL"})
+		return
+	}
+
+	httpReq, err := core.BuildSourceRequest("GET", downloadUrl, song.Source, "")
+	if err != nil {
+		c.JSON(502, gin.H{"success": false, "error": "Upstream request error"})
+		return
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		c.JSON(502, gin.H{"success": false, "error": "Upstream stream error"})
+		return
+	}
+	defer resp.Body.Close()
+
+	audioData, err = io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(502, gin.H{"success": false, "error": "Failed to read audio data"})
+		return
+	}
+
+	// 检测扩展名
+	ext = core.DetectAudioExtByContentType(resp.Header.Get("Content-Type"))
+	if ext == "" {
+		if parsedURL, parseErr := url.Parse(downloadUrl); parseErr == nil {
+			suffix := strings.ToLower(strings.TrimPrefix(path.Ext(parsedURL.Path), "."))
+			switch suffix {
+			case "mp3", "flac", "ogg", "m4a":
+				ext = suffix
+			}
+		}
+	}
+	if ext == "" {
+		ext = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(song.Ext, ".")))
+	}
+	if ext == "" {
+		ext = "mp3"
+	}
+
+	// 构建文件名
+	filename := core.BuildDownloadFilename(song, ext, settings.DownloadFilenameTemplate)
+
+	// 保存并嵌入元数据
+	savedPath, err := saveToLocalMusicDir(audioData, ext, song, filename)
+	if err != nil {
+		c.JSON(500, gin.H{"success": false, "error": fmt.Sprintf("save to local failed: %v", err)})
+		return
+	}
+
+	// 返回文件
+	serveSavedFile(c, savedPath, filename, ext)
+}
+
+// serveSavedFile 读取本地文件并返回给客户端
+func serveSavedFile(c *gin.Context, filePath string, filename string, ext string) {
+	file, err := os.Open(filePath)
 	if err != nil {
 		c.JSON(500, gin.H{"success": false, "error": "Failed to read saved file"})
 		return
 	}
 	defer file.Close()
 
-	// 获取文件信息用于设置响应头
 	fileInfo, err := file.Stat()
 	if err != nil {
 		c.JSON(500, gin.H{"success": false, "error": "Failed to get file info"})
 		return
 	}
 
-	// 设置响应头
 	c.Header("Content-Type", core.AudioMimeByExt(ext))
 	c.Header("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
 	setDownloadHeader(c, filename)
-
-	// 返回文件流
 	http.ServeContent(c.Writer, c.Request, filename, fileInfo.ModTime(), file)
 }
 
