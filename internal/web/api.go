@@ -167,21 +167,12 @@ type SearchResponse struct {
 
 // DownloadRequest 下载请求结构体
 // 定义了音乐下载接口的请求参数
+// 只需提供 id 和 source，其他元数据将从搜索结果中获取
 type DownloadRequest struct {
 	// ID 歌曲在对应音乐平台的唯一标识符
-	ID string `json:"id"`
-	// Source 音乐来源平台标识
-	Source string `json:"source"`
-	// Name 歌曲名称（用于生成文件名）
-	Name string `json:"name"`
-	// Artist 歌手名称（用于生成文件名）
-	Artist string `json:"artist"`
-	// Album 专辑名称（用于嵌入音频元数据）
-	Album string `json:"album"`
-	// Cover 歌曲封面 URL（用于嵌入音频元数据）
-	Cover string `json:"cover"`
-	// Extra 额外的歌曲参数信息
-	Extra map[string]string `json:"extra"`
+	ID string `json:"id" binding:"required"`
+	// Source 音乐来源平台标识（如 netease、qq、kugou 等）
+	Source string `json:"source" binding:"required"`
 }
 
 // handleAPISearch 处理 JSON API 搜索请求
