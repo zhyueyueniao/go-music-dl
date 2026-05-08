@@ -167,14 +167,12 @@ type SearchResponse struct {
 
 // DownloadRequest 下载请求结构体
 // 定义了音乐下载接口的请求参数
-// 只需提供 id、source 和可选的 name，其他元数据将从搜索结果中获取
+// 只需提供 id 和 source，其他元数据将从搜索结果中获取
 type DownloadRequest struct {
 	// ID 歌曲在对应音乐平台的唯一标识符
 	ID string `json:"id" binding:"required"`
 	// Source 音乐来源平台标识（如 netease、qq、kugou 等）
 	Source string `json:"source" binding:"required"`
-	// Name 歌曲名称（用于搜索本地歌曲和生成文件名）
-	Name string `json:"name"`
 }
 
 // handleAPISearch 处理 JSON API 搜索请求
@@ -501,7 +499,6 @@ func handleAPIDownload(c *gin.Context) {
 	// 获取并验证必要参数
 	id := strings.TrimSpace(req.ID)
 	source := strings.TrimSpace(req.Source)
-	songName := strings.TrimSpace(req.Name)
 
 	// 验证 ID 和来源是否为必填项
 	if id == "" || source == "" {
@@ -515,11 +512,10 @@ func handleAPIDownload(c *gin.Context) {
 		return
 	}
 
-	// 构建歌曲对象（先使用传入的 name 作为默认值）
+	// 构建歌曲对象
 	tempSong := &model.Song{
 		ID:     id,
 		Source: source,
-		Name:   songName,
 	}
 
 	// 获取 Web 设置
