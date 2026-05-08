@@ -206,6 +206,16 @@ type DownloadRequest struct {
 	ID string `json:"id" binding:"required"`
 	// Source 音乐来源平台标识（如 netease、qq、kugou 等）
 	Source string `json:"source" binding:"required"`
+	// Name 歌曲名称（可选，如果不传则尝试获取）
+	Name string `json:"name"`
+	// Artist 歌手名称（可选）
+	Artist string `json:"artist"`
+	// Album 专辑名称（可选）
+	Album string `json:"album"`
+	// Cover 封面图片 URL（可选）
+	Cover string `json:"cover"`
+	// Ext 文件扩展名（可选）
+	Ext string `json:"ext"`
 }
 
 // handleAPISearch 处理 JSON API 搜索请求
@@ -594,16 +604,23 @@ func handleAPIDownload(c *gin.Context) {
 	}
 
 	// 在线下载模式
-	// 构建歌曲对象
+	// 构建歌曲对象（优先使用请求中传入的元数据）
 	tempSong := &model.Song{
 		ID:     id,
 		Source: source,
+		Name:   strings.TrimSpace(req.Name),
+		Artist: strings.TrimSpace(req.Artist),
+		Album:  strings.TrimSpace(req.Album),
+		Cover:  strings.TrimSpace(req.Cover),
+		Ext:    strings.TrimSpace(req.Ext),
 	}
 
-	// 先获取完整的歌曲信息（用于文件名和元数据）
-	fullSong := fetchSongInfo(tempSong)
-	if fullSong != nil {
-		tempSong = fullSong
+	// 如果名称为空，尝试获取完整的歌曲信息
+	if tempSong.Name == "" {
+		fullSong := fetchSongInfo(tempSong)
+		if fullSong != nil {
+			tempSong = fullSong
+		}
 	}
 
 	// 检测扩展名
@@ -1177,9 +1194,7 @@ func saveToLocalMusicDir(audioData []byte, ext string, song *model.Song, filenam
 	// 获取歌词（如果可用）
 	var lyric string
 	if lyricFn := core.GetLyricFunc(song.Source); lyricFn != nil {
-		rawLyric, _ := lyricFn(song)
-		// 清理 LRC 时间戳，只保留纯歌词文本
-		lyric = cleanLrcLyrics(rawLyric)
+		lyric, _ = lyricFn(song)
 	}
 
 	// 获取封面数据
