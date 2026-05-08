@@ -20,9 +20,10 @@ import (
 
 // downloadTask 表示一个后台下载保存任务
 type downloadTask struct {
-	FilePath string
-	Song     *model.Song
-	Ext      string
+	FilePath      string
+	Song          *model.Song
+	Ext           string
+	AlreadyDecrypted bool // 对于汽水音乐，是否已经在主流程中解密
 }
 
 // pendingDownloads 跟踪正在后台保存的任务，防止重复写入
@@ -843,19 +844,11 @@ func streamSodaDownload(song *model.Song, filename string, c *gin.Context, taskK
 	setDownloadHeader(c, filename)
 	c.Status(200)
 
-	// 同时返回给客户端和后台保存
-	pipeReader, pipeWriter := io.Pipe()
-	defer pipeReader.Close()
-
-	// 启动后台保存任务
-	go saveDownloadToLocalBackground(song, ext, pipeReader, taskKey+"_save")
-
-	// 写入管道
-	_, _ = pipeWriter.Write(decryptedData)
-	pipeWriter.Close()
-
-	// 同时返回给客户端
+	// 返回给客户端
 	c.Writer.Write(decryptedData)
+
+	// 后台保存（不需要解密，因为已解密）
+	go saveDownloadDataToLocal(decryptedData, ext, song, filename, true)
 }
 
 // saveDownloadToLocalBackground 后台保存下载数据到本地并嵌入元数据
@@ -868,7 +861,7 @@ func saveDownloadToLocalBackground(song *model.Song, ext string, reader *io.Pipe
 		return
 	}
 
-	// 如果是汽水音乐，需要解密
+	// 对于汽水音乐，需要解密
 	if song.Source == "soda" {
 		cookie := core.CM.Get("soda")
 		sodaInst := soda.New(cookie)
@@ -878,9 +871,28 @@ func saveDownloadToLocalBackground(song *model.Song, ext string, reader *io.Pipe
 		}
 	}
 
-	// 获取 Web 设置
+	// 保存到本地并嵌入元数据
+	saveDownloadDataToLocal(audioData, ext, song, "", false)
+}
+
+// saveDownloadDataToLocal 保存音频数据到本地并嵌入元数据
+// audioData: 音频数据（已解密）
+// ext: 音频扩展名
+// song: 歌曲信息
+// filenameHint: 文件名提示（可选）
+// alreadyDecrypted: 数据是否已经解密（汽水音乐为 true）
+func saveDownloadDataToLocal(audioData []byte, ext string, song *model.Song, filenameHint string, alreadyDecrypted bool) {
+	// 如果数据为空，直接返回
+	if len(audioData) == 0 {
+		return
+	}
+
+	// 构建文件名
 	settings := core.GetWebSettings()
-	filename := core.BuildDownloadFilename(song, ext, settings.DownloadFilenameTemplate)
+	filename := filenameHint
+	if filename == "" {
+		filename = core.BuildDownloadFilename(song, ext, settings.DownloadFilenameTemplate)
+	}
 
 	// 保存到本地并嵌入元数据
 	_, _ = saveToLocalMusicDir(audioData, ext, song, filename)
