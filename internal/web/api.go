@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -15,14 +16,60 @@ import (
 	"github.com/guohuiyuan/music-lib/soda"
 )
 
+// apiKeyFromEnv 从环境变量获取 API Key
+// 环境变量名: MUSIC_DL_API_KEY
+// 如果未设置或为空，则不启用 API Key 认证
+var apiKeyFromEnv = strings.TrimSpace(os.Getenv("MUSIC_DL_API_KEY"))
+
+// apiKeyMiddleware API Key 认证中间件
+// 检查请求头中的 X-API-Key 是否与配置的 API Key 匹配
+// 如果环境变量 MUSIC_DL_API_KEY 未设置，则跳过认证
+func apiKeyMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 如果环境变量未设置 API Key，跳过认证
+		if apiKeyFromEnv == "" {
+			c.Next()
+			return
+		}
+
+		// 从请求头获取 API Key
+		apiKey := c.GetHeader("X-API-Key")
+		if apiKey == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"error":   "API Key is required",
+			})
+			c.Abort()
+			return
+		}
+
+		// 验证 API Key
+		if apiKey != apiKeyFromEnv {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"error":   "Invalid API Key",
+			})
+			c.Abort()
+			return
+		}
+
+		// 认证通过，继续处理请求
+		c.Next()
+	}
+}
+
 // RegisterAPIRoutes 注册 JSON API 路由
 // 将 /api/search 和 /api/download 两个端点注册到给定的路由组中
 // api: Gin 路由组，用于注册 API 端点
 func RegisterAPIRoutes(api *gin.RouterGroup) {
+	// 创建 API 子路由组，应用 API Key 认证中间件
+	apiGroup := api.Group("/api")
+	apiGroup.Use(apiKeyMiddleware())
+
 	// POST /api/search - 音乐搜索接口（JSON格式）
-	api.POST("/api/search", handleAPISearch)
+	apiGroup.POST("/search", handleAPISearch)
 	// POST /api/download - 音乐下载接口（JSON请求，数据流响应）
-	api.POST("/api/download", handleAPIDownload)
+	apiGroup.POST("/download", handleAPIDownload)
 }
 
 // SearchRequest 搜索请求结构体
