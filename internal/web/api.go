@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -776,21 +777,26 @@ func streamRegularDownload(song *model.Song, ext string, filename string, c *gin
 	setDownloadHeader(c, filename)
 	c.Status(200)
 
-	// 创建 TeeReader，同时流式传输给客户端和写入管道
-	pipeReader, pipeWriter := io.Pipe()
-	defer pipeReader.Close()
-
-	// 启动后台保存任务
-	go saveDownloadToLocalBackground(song, ext, pipeReader, taskKey+"_save")
-
-	// 同时流式传输给客户端
-	multiWriter := io.MultiWriter(pipeWriter, c.Writer)
+	// 使用 bytes.Buffer 先收集完整数据，避免管道关闭时机问题
+	var buf bytes.Buffer
+	multiWriter := io.MultiWriter(&buf, c.Writer)
 	_, copyErr := io.Copy(multiWriter, resp.Body)
-	pipeWriter.Close()
 
 	if copyErr != nil && copyErr != io.EOF {
-		// 忽略错误，因为客户端可能提前断开连接
+		fmt.Printf("[流式下载] 传输数据失败: %v\n", copyErr)
 	}
+
+	// 后台保存（使用完整数据）
+	go func() {
+		if buf.Len() > 0 {
+			savedPath, err := saveDownloadDataToLocal(buf.Bytes(), ext, song, "", false)
+			if err != nil {
+				fmt.Printf("[后台保存] 保存失败: %v\n", err)
+			} else {
+				fmt.Printf("[后台保存] 保存成功: %s\n", savedPath)
+			}
+		}
+	}()
 }
 
 // streamSodaDownload 汽水音乐的下载（需要先完整下载再解密）
