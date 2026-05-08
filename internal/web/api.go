@@ -182,8 +182,6 @@ type DownloadRequest struct {
 	Cover string `json:"cover"`
 	// Extra 额外的歌曲参数信息
 	Extra map[string]string `json:"extra"`
-	// SaveToLocal 下载后是否保存到本地音乐目录，默认为 true
-	SaveToLocal bool `json:"save_to_local"`
 }
 
 // handleAPISearch 处理 JSON API 搜索请求
@@ -496,7 +494,7 @@ func getGenreFromExtra(extra map[string]string) string {
 }
 
 // handleAPIDownload 处理 JSON API 下载请求
-// 支持从各音乐平台下载歌曲，返回音频数据流，同时可以保存到本地音乐目录
+// 从各音乐平台下载歌曲，自动嵌入完整元数据后保存到本地音乐目录，最后读取本地文件返回
 // 自动嵌入歌曲完整元数据（标题、艺术家、专辑、封面、歌词）到音频文件
 // c: Gin 上下文对象，包含请求和响应信息
 func handleAPIDownload(c *gin.Context) {
@@ -529,7 +527,7 @@ func handleAPIDownload(c *gin.Context) {
 		artist = "Unknown"
 	}
 
-	// 处理本地音乐源
+	// 处理本地音乐源，直接读取并返回
 	if isLocalMusicSource(source) {
 		serveLocalMusicDownload(c, id, false)
 		return
@@ -548,6 +546,9 @@ func handleAPIDownload(c *gin.Context) {
 		Cover:  coverURL,
 		Extra:  req.Extra,
 	}
+
+	var audioData []byte
+	var ext string
 
 	// 处理汽水音乐特殊下载逻辑
 	if source == "soda" {
@@ -571,123 +572,104 @@ func handleAPIDownload(c *gin.Context) {
 		}
 		defer resp.Body.Close()
 		encryptedData, _ := io.ReadAll(resp.Body)
-		finalData, err := soda.DecryptAudio(encryptedData, info.PlayAuth)
+		audioData, err = soda.DecryptAudio(encryptedData, info.PlayAuth)
 		if err != nil {
 			c.JSON(500, gin.H{"success": false, "error": "Decrypt failed"})
 			return
 		}
-		ext := core.DetectAudioExt(finalData)
-		filename := core.BuildDownloadFilename(tempSong, ext, settings.DownloadFilenameTemplate)
-
-		// 如果需要保存到本地音乐目录
-		if req.SaveToLocal {
-			savedPath, saveErr := saveToLocalMusicDir(finalData, ext, tempSong, filename)
-			if saveErr != nil {
-				c.JSON(500, gin.H{"success": false, "error": fmt.Sprintf("save to local failed: %v", saveErr)})
-				return
-			}
-			c.JSON(200, gin.H{
-				"success":    true,
-				"saved":      true,
-				"path":       savedPath,
-				"filename":   filename,
-			})
+		ext = core.DetectAudioExt(audioData)
+	} else {
+		// 获取对应音乐源的下载函数
+		dlFunc := core.GetDownloadFunc(source)
+		if dlFunc == nil {
+			c.JSON(400, gin.H{"success": false, "error": "Unknown source"})
 			return
 		}
 
-		setDownloadHeader(c, filename)
-		c.Data(200, core.AudioMimeByExt(ext), finalData)
-		return
-	}
+		// 获取下载 URL
+		downloadUrl, err := dlFunc(tempSong)
+		if err != nil {
+			c.JSON(404, gin.H{"success": false, "error": "Failed to get URL"})
+			return
+		}
 
-	// 获取对应音乐源的下载函数
-	dlFunc := core.GetDownloadFunc(source)
-	if dlFunc == nil {
-		c.JSON(400, gin.H{"success": false, "error": "Unknown source"})
-		return
-	}
+		// 构建 HTTP 请求
+		httpReq, err := core.BuildSourceRequest("GET", downloadUrl, source, c.GetHeader("Range"))
+		if err != nil {
+			c.JSON(502, gin.H{"success": false, "error": "Upstream request error"})
+			return
+		}
 
-	// 获取下载 URL
-	downloadUrl, err := dlFunc(tempSong)
-	if err != nil {
-		c.JSON(404, gin.H{"success": false, "error": "Failed to get URL"})
-		return
-	}
+		// 发起请求获取音频数据
+		client := &http.Client{}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			c.JSON(502, gin.H{"success": false, "error": "Upstream stream error"})
+			return
+		}
+		defer resp.Body.Close()
 
-	// 构建 HTTP 请求，支持 Range 请求
-	httpReq, err := core.BuildSourceRequest("GET", downloadUrl, source, c.GetHeader("Range"))
-	if err != nil {
-		c.JSON(502, gin.H{"success": false, "error": "Upstream request error"})
-		return
-	}
+		// 读取所有音频数据
+		audioData, err = io.ReadAll(resp.Body)
+		if err != nil {
+			c.JSON(502, gin.H{"success": false, "error": "Failed to read audio data"})
+			return
+		}
 
-	// 发起请求获取音频数据
-	client := &http.Client{}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		c.JSON(502, gin.H{"success": false, "error": "Upstream stream error"})
-		return
-	}
-	defer resp.Body.Close()
-
-	// 读取所有音频数据
-	audioData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		c.JSON(502, gin.H{"success": false, "error": "Failed to read audio data"})
-		return
-	}
-
-	// 检测音频文件扩展名
-	ext := core.DetectAudioExtByContentType(resp.Header.Get("Content-Type"))
-	if ext == "" {
-		// 尝试从 URL 路径中提取扩展名
-		if parsedURL, parseErr := url.Parse(downloadUrl); parseErr == nil {
-			suffix := strings.ToLower(strings.TrimPrefix(path.Ext(parsedURL.Path), "."))
-			switch suffix {
-			case "mp3", "flac", "ogg", "m4a":
-				ext = suffix
+		// 检测音频文件扩展名
+		ext = core.DetectAudioExtByContentType(resp.Header.Get("Content-Type"))
+		if ext == "" {
+			// 尝试从 URL 路径中提取扩展名
+			if parsedURL, parseErr := url.Parse(downloadUrl); parseErr == nil {
+				suffix := strings.ToLower(strings.TrimPrefix(path.Ext(parsedURL.Path), "."))
+				switch suffix {
+				case "mp3", "flac", "ogg", "m4a":
+					ext = suffix
+				}
 			}
 		}
-	}
-	if ext == "" {
-		// 尝试从歌曲信息中获取扩展名
-		ext = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(tempSong.Ext, ".")))
-	}
-	if ext == "" {
-		// 默认使用 MP3 格式
-		ext = "mp3"
+		if ext == "" {
+			// 尝试从歌曲信息中获取扩展名
+			ext = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(tempSong.Ext, ".")))
+		}
+		if ext == "" {
+			// 默认使用 MP3 格式
+			ext = "mp3"
+		}
 	}
 
 	// 构建下载文件名
 	filename := core.BuildDownloadFilename(tempSong, ext, settings.DownloadFilenameTemplate)
 
-	// 如果需要保存到本地音乐目录，先嵌入元数据
-	if req.SaveToLocal {
-		savedPath, saveErr := saveToLocalMusicDir(audioData, ext, tempSong, filename)
-		if saveErr != nil {
-			c.JSON(500, gin.H{"success": false, "error": fmt.Sprintf("save to local failed: %v", saveErr)})
-			return
-		}
-		c.JSON(200, gin.H{
-			"success":    true,
-			"saved":      true,
-			"path":       savedPath,
-			"filename":   filename,
-		})
+	// 保存到本地音乐目录并嵌入元数据
+	savedPath, err := saveToLocalMusicDir(audioData, ext, tempSong, filename)
+	if err != nil {
+		c.JSON(500, gin.H{"success": false, "error": fmt.Sprintf("save to local failed: %v", err)})
 		return
 	}
 
-	// 如果不需要保存到本地，直接返回音频流
-	// 复制响应头信息（过滤掉不需要的头部）
-	for k, v := range resp.Header {
-		if k != "Transfer-Encoding" && k != "Date" && k != "Access-Control-Allow-Origin" {
-			c.Writer.Header()[k] = v
-		}
+	// 读取本地文件并返回
+	file, err := os.Open(savedPath)
+	if err != nil {
+		c.JSON(500, gin.H{"success": false, "error": "Failed to read saved file"})
+		return
+	}
+	defer file.Close()
+
+	// 获取文件信息用于设置响应头
+	fileInfo, err := file.Stat()
+	if err != nil {
+		c.JSON(500, gin.H{"success": false, "error": "Failed to get file info"})
+		return
 	}
 
+	// 设置响应头
+	c.Header("Content-Type", core.AudioMimeByExt(ext))
+	c.Header("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
 	setDownloadHeader(c, filename)
-	c.Status(resp.StatusCode)
-	c.Data(200, core.AudioMimeByExt(ext), audioData)
+
+	// 返回文件流
+	http.ServeContent(c.Writer, c.Request, filename, fileInfo.ModTime(), file)
 }
 
 // saveToLocalMusicDir 将音频数据保存到本地音乐目录并嵌入元数据
