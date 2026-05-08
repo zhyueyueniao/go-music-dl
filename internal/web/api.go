@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -83,6 +84,8 @@ type SearchRequest struct {
 	Sources []string `json:"sources"`
 	// ExactArtist 精确匹配歌手名，用于过滤搜索结果
 	ExactArtist string `json:"exact_artist"`
+	// IncludeLocal 是否包含本地音乐搜索，默认为 true
+	IncludeLocal bool `json:"include_local"`
 }
 
 // SongDetail 歌曲详细信息结构体
@@ -179,10 +182,12 @@ type DownloadRequest struct {
 	Cover string `json:"cover"`
 	// Extra 额外的歌曲参数信息
 	Extra map[string]string `json:"extra"`
+	// SaveToLocal 下载后是否保存到本地音乐目录，默认为 true
+	SaveToLocal bool `json:"save_to_local"`
 }
 
 // handleAPISearch 处理 JSON API 搜索请求
-// 支持关键词搜索、链接解析、多源并行搜索
+// 支持关键词搜索、链接解析、多源并行搜索，同时支持搜索本地音乐
 // c: Gin 上下文对象，包含请求和响应信息
 func handleAPISearch(c *gin.Context) {
 	// 解析 JSON 请求体
@@ -325,6 +330,64 @@ func handleAPISearch(c *gin.Context) {
 			}(src)
 		}
 		wg.Wait()
+
+		// 如果启用了本地音乐搜索或未指定源，默认包含本地音乐
+		if req.IncludeLocal || len(req.Sources) == 0 {
+			// 搜索本地音乐
+			localTracks, dir, exists, err := scanLocalMusicTracks()
+			if err == nil && exists && len(localTracks) > 0 {
+				// 在本地音乐中搜索匹配的歌曲
+				keywordLower := strings.ToLower(keyword)
+				for _, track := range localTracks {
+					// 通过歌曲名称匹配
+					if strings.Contains(strings.ToLower(track.Name), keywordLower) {
+						localSong := model.Song{
+							ID:       track.ID,
+							Source:   localMusicSource,
+							Name:     track.Name,
+							Artist:   track.Artist,
+							Album:    track.Album,
+							Cover:    track.Cover,
+							Duration: track.Duration,
+							Extra:    track.Extra,
+						}
+						// 歌手匹配过滤
+						if req.ExactArtist == "" || strings.ToLower(track.Artist) == strings.ToLower(req.ExactArtist) {
+							mu.Lock()
+							allSongs = append(allSongs, localSong)
+							mu.Unlock()
+						}
+					}
+					// 通过歌手名称匹配
+					if req.ExactArtist == "" && strings.Contains(strings.ToLower(track.Artist), keywordLower) {
+						localSong := model.Song{
+							ID:       track.ID,
+							Source:   localMusicSource,
+							Name:     track.Name,
+							Artist:   track.Artist,
+							Album:    track.Album,
+							Cover:    track.Cover,
+							Duration: track.Duration,
+							Extra:    track.Extra,
+						}
+						// 检查是否已经添加过（避免重复）
+						alreadyExists := false
+						for _, existing := range allSongs {
+							if existing.ID == localSong.ID && existing.Source == localSong.Source {
+								alreadyExists = true
+								break
+							}
+						}
+						if !alreadyExists {
+							mu.Lock()
+							allSongs = append(allSongs, localSong)
+							mu.Unlock()
+						}
+					}
+					_ = dir // 避免未使用变量警告
+				}
+			}
+		}
 	}
 
 	// 如果指定了精确歌手过滤，对歌曲结果进行过滤
@@ -433,7 +496,8 @@ func getGenreFromExtra(extra map[string]string) string {
 }
 
 // handleAPIDownload 处理 JSON API 下载请求
-// 支持从各音乐平台下载歌曲，返回音频数据流
+// 支持从各音乐平台下载歌曲，返回音频数据流，同时可以保存到本地音乐目录
+// 自动嵌入歌曲完整元数据（标题、艺术家、专辑、封面、歌词）到音频文件
 // c: Gin 上下文对象，包含请求和响应信息
 func handleAPIDownload(c *gin.Context) {
 	// 解析 JSON 请求体
@@ -514,6 +578,23 @@ func handleAPIDownload(c *gin.Context) {
 		}
 		ext := core.DetectAudioExt(finalData)
 		filename := core.BuildDownloadFilename(tempSong, ext, settings.DownloadFilenameTemplate)
+
+		// 如果需要保存到本地音乐目录
+		if req.SaveToLocal {
+			savedPath, saveErr := saveToLocalMusicDir(finalData, ext, tempSong, filename)
+			if saveErr != nil {
+				c.JSON(500, gin.H{"success": false, "error": fmt.Sprintf("save to local failed: %v", saveErr)})
+				return
+			}
+			c.JSON(200, gin.H{
+				"success":    true,
+				"saved":      true,
+				"path":       savedPath,
+				"filename":   filename,
+			})
+			return
+		}
+
 		setDownloadHeader(c, filename)
 		c.Data(200, core.AudioMimeByExt(ext), finalData)
 		return
@@ -549,11 +630,11 @@ func handleAPIDownload(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	// 复制响应头信息（过滤掉不需要的头部）
-	for k, v := range resp.Header {
-		if k != "Transfer-Encoding" && k != "Date" && k != "Access-Control-Allow-Origin" {
-			c.Writer.Header()[k] = v
-		}
+	// 读取所有音频数据
+	audioData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(502, gin.H{"success": false, "error": "Failed to read audio data"})
+		return
 	}
 
 	// 检测音频文件扩展名
@@ -577,10 +658,111 @@ func handleAPIDownload(c *gin.Context) {
 		ext = "mp3"
 	}
 
-	// 构建下载文件名并设置响应头
+	// 构建下载文件名
 	filename := core.BuildDownloadFilename(tempSong, ext, settings.DownloadFilenameTemplate)
+
+	// 如果需要保存到本地音乐目录，先嵌入元数据
+	if req.SaveToLocal {
+		savedPath, saveErr := saveToLocalMusicDir(audioData, ext, tempSong, filename)
+		if saveErr != nil {
+			c.JSON(500, gin.H{"success": false, "error": fmt.Sprintf("save to local failed: %v", saveErr)})
+			return
+		}
+		c.JSON(200, gin.H{
+			"success":    true,
+			"saved":      true,
+			"path":       savedPath,
+			"filename":   filename,
+		})
+		return
+	}
+
+	// 如果不需要保存到本地，直接返回音频流
+	// 复制响应头信息（过滤掉不需要的头部）
+	for k, v := range resp.Header {
+		if k != "Transfer-Encoding" && k != "Date" && k != "Access-Control-Allow-Origin" {
+			c.Writer.Header()[k] = v
+		}
+	}
+
 	setDownloadHeader(c, filename)
 	c.Status(resp.StatusCode)
-	// 流式传输音频数据
-	io.Copy(c.Writer, resp.Body)
+	c.Data(200, core.AudioMimeByExt(ext), audioData)
+}
+
+// saveToLocalMusicDir 将音频数据保存到本地音乐目录并嵌入元数据
+// audioData: 原始音频数据
+// ext: 音频文件扩展名
+// song: 歌曲信息对象，用于获取元数据
+// filenameHint: 文件名提示
+// 返回保存后的文件路径和错误信息
+func saveToLocalMusicDir(audioData []byte, ext string, song *model.Song, filenameHint string) (string, error) {
+	// 获取本地音乐目录
+	dir := localMusicDownloadDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// 获取绝对路径
+	rootAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// 确保文件名合法
+	safeFilename := strings.TrimSpace(filenameHint)
+	if safeFilename == "" {
+		safeFilename = fmt.Sprintf("%s - %s.%s", song.Name, song.Artist, ext)
+	}
+	// 清理文件名中的非法字符
+	safeFilename = sanitizeFilenameForSave(safeFilename)
+
+	// 生成唯一文件路径
+	filePath := uniqueLocalMusicPath(rootAbs, safeFilename)
+
+	// 获取歌词（如果可用）
+	var lyric string
+	if lyricFn := core.GetLyricFunc(song.Source); lyricFn != nil {
+		lyric, _ = lyricFn(song)
+	}
+
+	// 获取封面数据
+	var coverData []byte
+	var coverMime string
+	if strings.TrimSpace(song.Cover) != "" {
+		coverData, coverMime, _ = core.FetchBytesWithMime(song.Cover, song.Source)
+	}
+
+	// 嵌入元数据到音频文件
+	embeddedData, err := core.EmbedSongMetadata(audioData, song, lyric, coverData, coverMime)
+	if err != nil {
+		// 如果嵌入失败，使用原始数据
+		embeddedData = audioData
+	}
+
+	// 写入文件
+	if err := os.WriteFile(filePath, embeddedData, 0644); err != nil {
+		return "", fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return filePath, nil
+}
+
+// sanitizeFilenameForSave 清理文件名中的非法字符
+// filename: 原始文件名
+// 返回清理后的安全文件名
+func sanitizeFilenameForSave(filename string) string {
+	// 替换 Windows 和通用文件系统中的非法字符
+	illegalChars := []string{"\\", "/", ":", "*", "?", "\"", "<", ">", "|"}
+	result := filename
+	for _, char := range illegalChars {
+		result = strings.ReplaceAll(result, char, "_")
+	}
+	// 去除首尾空格和点
+	result = strings.Trim(result, " .")
+	// 确保文件名不为空
+	if result == "" {
+		result = "music"
+	}
+	return result
 }
