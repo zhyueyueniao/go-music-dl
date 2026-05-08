@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -599,6 +600,12 @@ func handleAPIDownload(c *gin.Context) {
 		Source: source,
 	}
 
+	// 先获取完整的歌曲信息（用于文件名和元数据）
+	fullSong := fetchSongInfo(tempSong)
+	if fullSong != nil {
+		tempSong = fullSong
+	}
+
 	// 检测扩展名
 	ext := detectAudioExtFromParams(tempSong.Ext)
 
@@ -1016,6 +1023,39 @@ func streamDownloadAndSaveBackground(song *model.Song, c *gin.Context) {
 	pipeWriter.Close()
 }
 
+// fetchSongInfo 根据歌曲ID和来源获取完整的歌曲信息
+func fetchSongInfo(song *model.Song) *model.Song {
+	if song == nil || song.ID == "" || song.Source == "" {
+		return nil
+	}
+
+	// 使用搜索函数获取完整信息
+	searchFn := core.GetSearchFunc(song.Source)
+	if searchFn == nil {
+		return nil
+	}
+
+	// 搜索歌曲（使用ID或尝试获取详情）
+	results, err := searchFn(song.ID)
+	if err != nil {
+		return nil
+	}
+
+	// 找到匹配的歌曲
+	for _, result := range results {
+		if result.ID == song.ID {
+			return &result
+		}
+	}
+
+	// 如果没找到匹配的，返回第一个结果
+	if len(results) > 0 {
+		return &results[0]
+	}
+
+	return nil
+}
+
 // detectAudioExtFromParams 从歌曲参数中检测音频扩展名
 func detectAudioExtFromParams(ext string) string {
 	if ext == "" {
@@ -1081,6 +1121,29 @@ func serveLocalMusicFile(c *gin.Context, filePath string, filename string, ext s
 	http.ServeContent(c.Writer, c.Request, filename, fileInfo.ModTime(), file)
 }
 
+// cleanLrcLyrics 清理 LRC 歌词中的时间戳
+func cleanLrcLyrics(lyric string) string {
+	if lyric == "" {
+		return ""
+	}
+
+	// 使用正则表达式移除时间戳
+	re := regexp.MustCompile(`\[\d{2}:\d{2}(?:\.\d{2,3})?\]`)
+	result := re.ReplaceAllString(lyric, "")
+
+	// 移除多余的空行
+	lines := strings.Split(result, "\n")
+	var cleaned []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		}
+	}
+
+	return strings.Join(cleaned, "\n")
+}
+
 // saveToLocalMusicDir 将音频数据保存到本地音乐目录并嵌入元数据
 // audioData: 原始音频数据
 // ext: 音频文件扩展名
@@ -1114,7 +1177,9 @@ func saveToLocalMusicDir(audioData []byte, ext string, song *model.Song, filenam
 	// 获取歌词（如果可用）
 	var lyric string
 	if lyricFn := core.GetLyricFunc(song.Source); lyricFn != nil {
-		lyric, _ = lyricFn(song)
+		rawLyric, _ := lyricFn(song)
+		// 清理 LRC 时间戳，只保留纯歌词文本
+		lyric = cleanLrcLyrics(rawLyric)
 	}
 
 	// 获取封面数据
