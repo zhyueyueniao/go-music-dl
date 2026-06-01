@@ -84,12 +84,6 @@ github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e h1:ijClszYn+mADRFY17k
 github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e/go.mod h1:boTsfXsheKC2y+lKOCMpSfarhxDeIzfZG1jqGcPl3cA=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
-github.com/guohuiyuan/music-lib v1.1.1-0.20260508041445-95af4edc4536 h1:Cektyfi/mSikWZq5/kWpXcIcVyKxeoxs6pFv0ADoNUs=
-github.com/guohuiyuan/music-lib v1.1.1-0.20260508041445-95af4edc4536/go.mod h1:iIFU9eHsTWF8Ovp36EL8MPxV9uw2N6BUNaZt/FQwAls=
-github.com/guohuiyuan/music-lib v1.1.1-0.20260508041812-5ff2847fbb32 h1:gN/9kyrBGqX0j8gSRXilp3qqJl+xBmrY6BKApGxgzvg=
-github.com/guohuiyuan/music-lib v1.1.1-0.20260508041812-5ff2847fbb32/go.mod h1:iIFU9eHsTWF8Ovp36EL8MPxV9uw2N6BUNaZt/FQwAls=
-github.com/guohuiyuan/music-lib v1.1.1-0.20260508044707-4f279029ff77 h1:dQtN423cS/dBiIydgDzXStrWhpdf1SVSBHDm7ynleWI=
-github.com/guohuiyuan/music-lib v1.1.1-0.20260508044707-4f279029ff77/go.mod h1:iIFU9eHsTWF8Ovp36EL8MPxV9uw2N6BUNaZt/FQwAls=
 github.com/guohuiyuan/music-lib v1.1.1-0.20260508045308-ec7d230994d5 h1:A/lnFBPmad+bNpVTJVIjscJ24tEGvpfAcEq3bxbQHLs=
 github.com/guohuiyuan/music-lib v1.1.1-0.20260508045308-ec7d230994d5/go.mod h1:iIFU9eHsTWF8Ovp36EL8MPxV9uw2N6BUNaZt/FQwAls=
 github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs4luLUK2k=
@@ -120,8 +114,9 @@ github.com/mattn/go-localereader v0.0.1 h1:ygSAOl7ZXTx4RdPYinUpg6W99U8jWvWi9Ye2J
 github.com/mattn/go-localereader v0.0.1/go.mod h1:8fBrzywKY7BI3czFoHkuzRoWE9C+EiG4R1k4Cjx5p88=
 github.com/mattn/go-runewidth v0.0.19 h1:v++JhqYnZuu5jSKrk9RbgF5v4CGUjqRfBm05byFGLdw=
 github.com/mattn/go-runewidth v0.0.19/go.mod h1:XBkDxAl56ILZc9knddidhrOlY5R/pDhgLpndooCuJAs=
-github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421 h1:ZqeYNhU3OHLH3mGKHDcjJRFFRrJa6eAM5H+CtDdOsPc=
 github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
+github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd h1:TRLaZ9cD/w8PVh93nsPXa1VrQ6jlwL5oN8l14QlcNfg=
+github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
 github.com/modern-go/reflect2 v1.0.2 h1:xBagoLtFs94CBntxluKeaWgTMpvLxC4ur3nMaC9Gz0M=
 github.com/modern-go/reflect2 v1.0.2/go.mod h1:yWuevngMOJpCy52FWWMvUC8ws7m/LJsjYzDa0/r8luk=
 github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 h1:ZK8zHtRHOkbHy6Mmr5D264iyp3TiX5OmNcI5cIARiQI=
